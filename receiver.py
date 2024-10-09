@@ -6,51 +6,64 @@
 # Separated the code into sections on seperate files
 
 import pyaudio
-from crypto_utils import decrypt_audio
+import numpy as np
+from crypto import ChaCha20Cipher
+import logging
 
-CHUNK = 1024
-FORMAT = pyaudio.paInt16
-RATE = 44100
+class AudioReceiver:
+    def __init__(self, key, input_device, output_device):
+        self.cipher = ChaCha20Cipher(key)
+        self.input_device = input_device
+        self.output_device = output_device
+        self.running = False
+        self.chunk = 1024
+        self.format = pyaudio.paInt16
+        self.channels = 1
+        self.rate = 44100
 
-def get_device_info(p, device_id):
-    device_info = p.get_device_info_by_index(device_id)
-    max_input_channels = device_info['maxInputChannels']
-    max_output_channels = device_info['maxOutputChannels']
-    return device_info, max_input_channels, max_output_channels
+    def audio_callback(self, in_data, frame_count, time_info, status):
+        decrypted_data = self.cipher.decrypt(in_data)
+        return (decrypted_data, pyaudio.paContinue)
 
-def receiver(key, stop_event, encrypted_input_id, decrypted_output_id):
-    p = pyaudio.PyAudio()
-    _, input_channels, _ = get_device_info(p, encrypted_input_id)
-    _, _, output_channels = get_device_info(p, decrypted_output_id)
-    
-    input_stream = p.open(format=FORMAT, 
-                          channels=input_channels,
-                          rate=RATE, 
-                          input=True, 
-                          frames_per_buffer=CHUNK+48, 
-                          input_device_index=encrypted_input_id)
-    
-    output_stream = p.open(format=FORMAT, 
-                           channels=output_channels,
-                           rate=RATE, 
-                           output=True, 
-                           frames_per_buffer=CHUNK, 
-                           output_device_index=decrypted_output_id)
+    def start(self):
+        self.running = True
+        p = pyaudio.PyAudio()
 
-    print(f"Receiver started. Input channels: {input_channels}, Output channels: {output_channels}")
-    try:
-        while not stop_event.is_set():
-            encrypted_chunk = input_stream.read(CHUNK + 48)
-            if len(encrypted_chunk) == (CHUNK + 48) * input_channels:
-                try:
-                    decrypted_chunk = decrypt_audio(encrypted_chunk, key)
-                    output_stream.write(decrypted_chunk)
-                except Exception as e:
-                    print(f"Decryption error: {e}")
-    finally:
-        input_stream.stop_stream()
-        input_stream.close()
-        output_stream.stop_stream()
-        output_stream.close()
-        p.terminate()
-    print("Receiver stopped.")
+        try:
+            input_stream = p.open(format=self.format,
+                                channels=self.channels,
+                                rate=self.rate,
+                                input=True,
+                                input_device_index=self.input_device,
+                                frames_per_buffer=self.chunk)
+
+            output_stream = p.open(format=self.format,
+                                channels=self.channels,
+                                rate=self.rate,
+                                output=True,
+                                output_device_index=self.output_device,
+                                frames_per_buffer=self.chunk)
+
+            logging.info("Audio streams opened successfully")
+
+            input_stream.start_stream()
+            
+            while self.running:
+                data = input_stream.read(self.chunk)
+                output_stream.write(data)
+
+        except Exception as e:
+            logging.error(f"Error in AudioReceiver: {str(e)}")
+            raise
+
+        finally:
+            if 'input_stream' in locals():
+                input_stream.stop_stream()
+                input_stream.close()
+            if 'output_stream' in locals():
+                output_stream.stop_stream()
+                output_stream.close()
+            p.terminate()
+
+    def stop(self):
+        self.running = False

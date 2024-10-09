@@ -10,211 +10,233 @@ import os
 import sys
 import pyaudio
 import threading
-from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QComboBox, QLineEdit, QMessageBox
+import logging
+from PyQt5.QtWidgets import QApplication, QMainWindow, QTabWidget, QPushButton, QLineEdit, QComboBox, QVBoxLayout, QWidget, QLabel
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from Crypto.Cipher import AES
-from Crypto.Hash import SHA256
-from sender import sender
-from receiver import receiver
+from crypto import generate_key
+from sender import AudioSender
+from receiver import AudioReceiver
 
-def generate_key():
-    return os.urandom(32)
+logging.basicConfig(level=logging.DEBUG)
 
-class EncryptionThread(QThread):
-    error_occurred = pyqtSignal(str)
+class AudioThread(QThread):
+    error_signal = pyqtSignal(str)
 
-    def __init__(self, key, raw_mic_input_id, encrypted_output_id, encrypted_input_id, decrypted_output_id):
+    def __init__(self, audio_class, *args):
         super().__init__()
-        self.key = key
-        self.raw_mic_input_id = raw_mic_input_id
-        self.encrypted_output_id = encrypted_output_id
-        self.encrypted_input_id = encrypted_input_id
-        self.decrypted_output_id = decrypted_output_id
-        self.stop_event = threading.Event()
+        self.audio_class = audio_class
+        self.args = args
+        self.audio_instance = None
 
     def run(self):
         try:
-            sender_thread = threading.Thread(target=sender, args=(self.key, self.stop_event, self.raw_mic_input_id, self.encrypted_output_id))
-            receiver_thread = threading.Thread(target=receiver, args=(self.key, self.stop_event, self.encrypted_input_id, self.decrypted_output_id))
-
-            sender_thread.start()
-            receiver_thread.start()
-
-            sender_thread.join()
-            receiver_thread.join()
+            self.audio_instance = self.audio_class(*self.args)
+            self.audio_instance.start()
         except Exception as e:
-            self.error_occurred.emit(str(e))
+            self.error_signal.emit(str(e))
 
     def stop(self):
-        self.stop_event.set()
+        if self.audio_instance:
+            self.audio_instance.stop()
+        self.wait()
 
-
-def save_settings(settings):
-    try:
-        with open('settings.json', 'w') as f:
-            json.dump(settings, f)
-    except IOError as e:
-        print(f"Error saving settings: {e}")
-
-def load_settings():
-    default_settings = {
-        'raw_mic_input_id': 0,
-        'encrypted_output_id': 0,
-        'encrypted_input_id': 0,
-        'decrypted_output_id': 0,
-        'key': generate_key().hex()
-    }
-    
-    try:
-        if not os.path.exists('settings.json'):
-            save_settings(default_settings)
-            return default_settings
-
-        with open('settings.json', 'r') as f:
-            settings = json.load(f)
-            
-        for key in default_settings:
-            if key not in settings:
-                settings[key] = default_settings[key]
-        
-        return settings
-    except (IOError, json.JSONDecodeError) as e:
-        print(f"Error loading settings: {e}")
-        return default_settings
-
-
-
-class AudioEncryptorUI(QMainWindow):
+class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PrivateVoice v00.02")
-        self.setGeometry(100, 100, 600, 350)
+        self.setWindowTitle("Audio Encryption")
+        self.setGeometry(100, 100, 400, 500)
 
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        layout = QVBoxLayout(central_widget)
+        self.tab_widget = QTabWidget()
+        self.setCentralWidget(self.tab_widget)
 
-        self.add_key_input(layout)
-        self.add_device_selectors(layout)
-        self.add_control_buttons(layout)
+        self.init_main_tab()
+        self.init_settings_tab()
 
-        self.encryption_thread = None
-        self.populate_device_lists()
         self.load_settings()
 
-    def add_key_input(self, layout):
-        key_layout = QHBoxLayout()
-        key_label = QLabel("Key:")
-        self.key_input = QLineEdit()
-        key_layout.addWidget(key_label)
-        key_layout.addWidget(self.key_input)
-        layout.addLayout(key_layout)
+        self.sender_thread = None
+        self.receiver_thread = None
 
-    def add_device_selectors(self, layout):
-        self.raw_mic_input = QComboBox()
+    def init_main_tab(self):
+        main_tab = QWidget()
+        layout = QVBoxLayout()
+        self.start_stop_button = QPushButton("Start")
+        self.start_stop_button.clicked.connect(self.toggle_encryption)
+        layout.addWidget(self.start_stop_button)
+        main_tab.setLayout(layout)
+        self.tab_widget.addTab(main_tab, "Main")
+
+    def init_settings_tab(self):
+        settings_tab = QWidget()
+        layout = QVBoxLayout()
+
+        self.key_field = QLineEdit()
+        self.key_field.setEchoMode(QLineEdit.Password)
+        layout.addWidget(QLabel("Encryption Key:"))
+        layout.addWidget(self.key_field)
+
+        self.show_key_button = QPushButton("Show Key")
+        self.show_key_button.setCheckable(True)
+        self.show_key_button.toggled.connect(self.toggle_key_visibility)
+        layout.addWidget(self.show_key_button)
+
+        self.new_key_button = QPushButton("New Key")
+        self.new_key_button.clicked.connect(self.generate_new_key)
+        layout.addWidget(self.new_key_button)
+
+        self.copy_key_button = QPushButton("Copy Key")
+        self.copy_key_button.clicked.connect(self.copy_key)
+        layout.addWidget(self.copy_key_button)
+
+        input_devices, output_devices = self.get_audio_devices()
+
+        self.mic_input = QComboBox()
+        self.mic_input.addItems(input_devices)
+        layout.addWidget(QLabel("Microphone Input:"))
+        layout.addWidget(self.mic_input)
+
         self.encrypted_output = QComboBox()
-        self.encrypted_input = QComboBox()
-        self.decrypted_output = QComboBox()
-
-        layout.addWidget(QLabel("Raw Microphone Input:"))
-        layout.addWidget(self.raw_mic_input)
-        layout.addWidget(QLabel("Encrypted Audio Output:"))
+        self.encrypted_output.addItems(output_devices)
+        layout.addWidget(QLabel("Encrypted Output:"))
         layout.addWidget(self.encrypted_output)
-        layout.addWidget(QLabel("Encrypted Audio Input:"))
+
+        self.encrypted_input = QComboBox()
+        self.encrypted_input.addItems(input_devices)
+        layout.addWidget(QLabel("Encrypted Input:"))
         layout.addWidget(self.encrypted_input)
-        layout.addWidget(QLabel("Decrypted Audio Output:"))
+
+        self.decrypted_output = QComboBox()
+        self.decrypted_output.addItems(output_devices)
+        layout.addWidget(QLabel("Decrypted Output:"))
         layout.addWidget(self.decrypted_output)
 
-    def add_control_buttons(self, layout):
-        self.start_button = QPushButton("Start")
-        self.stop_button = QPushButton("Stop")
-        self.regenerate_key_button = QPushButton("Regenerate Key")
-        layout.addWidget(self.start_button)
-        layout.addWidget(self.stop_button)
-        layout.addWidget(self.regenerate_key_button)
+        self.save_settings_button = QPushButton("Save Settings")
+        self.save_settings_button.clicked.connect(self.save_settings)
+        layout.addWidget(self.save_settings_button)
 
-        self.start_button.clicked.connect(self.start_encryption)
-        self.stop_button.clicked.connect(self.stop_encryption)
-        self.regenerate_key_button.clicked.connect(self.regenerate_key)
+        settings_tab.setLayout(layout)
+        self.tab_widget.addTab(settings_tab, "Settings")
 
-    def populate_device_lists(self):
+    def get_audio_devices(self):
         p = pyaudio.PyAudio()
+        input_devices = []
+        output_devices = []
+        
         for i in range(p.get_device_count()):
             device_info = p.get_device_info_by_index(i)
             device_name = device_info['name']
             if device_info['maxInputChannels'] > 0:
-                self.raw_mic_input.addItem(f"{i}: {device_name}")
-                self.encrypted_input.addItem(f"{i}: {device_name}")
+                input_devices.append(device_name)
             if device_info['maxOutputChannels'] > 0:
-                self.encrypted_output.addItem(f"{i}: {device_name}")
-                self.decrypted_output.addItem(f"{i}: {device_name}")
+                output_devices.append(device_name)
+        
         p.terminate()
+        return input_devices, output_devices
 
-    def start_encryption(self):
-        if self.encryption_thread and self.encryption_thread.isRunning():
-            QMessageBox.warning(self, "Warning", "Already running.")
-            return
+    def get_device_index(self, device_name, is_input):
+        p = pyaudio.PyAudio()
+        for i in range(p.get_device_count()):
+            dev = p.get_device_info_by_index(i)
+            if dev['name'] == device_name:
+                if (is_input and dev['maxInputChannels'] > 0) or (not is_input and dev['maxOutputChannels'] > 0):
+                    return i
+        return -1
 
-        key = bytes.fromhex(self.key_input.text())
-        raw_mic_input_id = int(self.raw_mic_input.currentText().split(':')[0])
-        encrypted_output_id = int(self.encrypted_output.currentText().split(':')[0])
-        encrypted_input_id = int(self.encrypted_input.currentText().split(':')[0])
-        decrypted_output_id = int(self.decrypted_output.currentText().split(':')[0])
-
-        self.encryption_thread = EncryptionThread(key, raw_mic_input_id, encrypted_output_id, encrypted_input_id, decrypted_output_id)
-        self.encryption_thread.error_occurred.connect(self.show_error)
-        self.encryption_thread.start()
-
-        self.start_button.setEnabled(False)
-        self.stop_button.setEnabled(True)
-
-    def stop_encryption(self):
-        if self.encryption_thread and self.encryption_thread.isRunning():
-            self.encryption_thread.stop()
-            self.encryption_thread.wait()
-            self.start_button.setEnabled(True)
-            self.stop_button.setEnabled(False)
+    def load_settings(self):
+        if not os.path.exists("settings.json"):
+            self.generate_new_key()
         else:
-            QMessageBox.warning(self, "Warning", "Not running")
-
-    def show_error(self, error_message):
-        QMessageBox.critical(self, "Error", f"An error occurred: {error_message}")
-        self.start_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
-
-    def regenerate_key(self):
-        new_key = generate_key()
-        self.key_input.setText(new_key.hex())
-        QMessageBox.information(self, "Key Regenerated", "A new encryption key has been generated.")
+            with open("settings.json", "r") as f:
+                settings = json.load(f)
+                self.key_field.setText(settings["key"])
+                
+                if "mic_input" in settings and settings["mic_input"] in [self.mic_input.itemText(i) for i in range(self.mic_input.count())]:
+                    self.mic_input.setCurrentText(settings["mic_input"])
+                if "encrypted_output" in settings and settings["encrypted_output"] in [self.encrypted_output.itemText(i) for i in range(self.encrypted_output.count())]:
+                    self.encrypted_output.setCurrentText(settings["encrypted_output"])
+                if "encrypted_input" in settings and settings["encrypted_input"] in [self.encrypted_input.itemText(i) for i in range(self.encrypted_input.count())]:
+                    self.encrypted_input.setCurrentText(settings["encrypted_input"])
+                if "decrypted_output" in settings and settings["decrypted_output"] in [self.decrypted_output.itemText(i) for i in range(self.decrypted_output.count())]:
+                    self.decrypted_output.setCurrentText(settings["decrypted_output"])
 
     def save_settings(self):
         settings = {
-            'raw_mic_input_id': self.raw_mic_input.currentIndex(),
-            'encrypted_output_id': self.encrypted_output.currentIndex(),
-            'encrypted_input_id': self.encrypted_input.currentIndex(),
-            'decrypted_output_id': self.decrypted_output.currentIndex(),
-            'key': self.key_input.text()
+            "key": self.key_field.text(),
+            "mic_input": self.mic_input.currentText(),
+            "encrypted_output": self.encrypted_output.currentText(),
+            "encrypted_input": self.encrypted_input.currentText(),
+            "decrypted_output": self.decrypted_output.currentText()
         }
-        save_settings(settings)
+        with open("settings.json", "w") as f:
+            json.dump(settings, f)
+        logging.info("Settings saved successfully")
 
-    def load_settings(self):
-        settings = load_settings()
-        if settings:
-            self.raw_mic_input.setCurrentIndex(settings.get('raw_mic_input_id', 0))
-            self.encrypted_output.setCurrentIndex(settings.get('encrypted_output_id', 0))
-            self.encrypted_input.setCurrentIndex(settings.get('encrypted_input_id', 0))
-            self.decrypted_output.setCurrentIndex(settings.get('decrypted_output_id', 0))
-            self.key_input.setText(settings.get('key', generate_key().hex()))
+    def toggle_key_visibility(self, checked):
+        self.key_field.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
 
-    def closeEvent(self, event):
+    def generate_new_key(self):
+        new_key = generate_key()
+        self.key_field.setText(new_key)
         self.save_settings()
-        event.accept()
 
-def main():
-    app = QApplication(sys.argv)
-    window = AudioEncryptorUI()
-    window.show()
-    sys.exit(app.exec_())
+    def copy_key(self):
+        QApplication.clipboard().setText(self.key_field.text())
+
+    def toggle_encryption(self):
+        if self.sender_thread is None and self.receiver_thread is None:
+            self.start_encryption()
+        else:
+            self.stop_encryption()
+
+    def start_encryption(self):
+        key = self.key_field.text()
+        
+        input_index = self.get_device_index(self.mic_input.currentText(), True)
+        output_index = self.get_device_index(self.encrypted_output.currentText(), False)
+        encrypted_input_index = self.get_device_index(self.encrypted_input.currentText(), True)
+        decrypted_output_index = self.get_device_index(self.decrypted_output.currentText(), False)
+        
+        if -1 in [input_index, output_index, encrypted_input_index, decrypted_output_index]:
+            logging.error("Error: Invalid device selection")
+            return
+
+        self.sender_thread = AudioThread(AudioSender, key, input_index, output_index)
+        self.receiver_thread = AudioThread(AudioReceiver, key, encrypted_input_index, decrypted_output_index)
+        
+        self.sender_thread.error_signal.connect(self.handle_audio_error)
+        self.receiver_thread.error_signal.connect(self.handle_audio_error)
+        
+        self.sender_thread.start()
+        self.receiver_thread.start()
+        
+        self.start_stop_button.setText("Stop")
+        self.disable_settings()
+
+    def stop_encryption(self):
+        if self.sender_thread:
+            self.sender_thread.stop()
+            self.sender_thread = None
+        if self.receiver_thread:
+            self.receiver_thread.stop()
+            self.receiver_thread = None
+        self.start_stop_button.setText("Start")
+        self.enable_settings()
+
+    def handle_audio_error(self, error_message):
+        logging.error(f"Audio Error: {error_message}")
+        self.stop_encryption()
+
+    def disable_settings(self):
+        for widget in self.tab_widget.widget(1).findChildren((QLineEdit, QComboBox, QPushButton)):
+            if widget != self.copy_key_button:
+                widget.setEnabled(False)
+
+    def enable_settings(self):
+        for widget in self.tab_widget.widget(1).findChildren((QLineEdit, QComboBox, QPushButton)):
+            widget.setEnabled(True)
 
 if __name__ == "__main__":
-    main()
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec_())
