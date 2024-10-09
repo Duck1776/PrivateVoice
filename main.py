@@ -43,7 +43,7 @@ class AudioThread(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Audio Encryption")
+        self.setWindowTitle("Private Voice - P2P (Alpha)")
         self.setGeometry(100, 100, 400, 500)
 
         self.tab_widget = QTabWidget()
