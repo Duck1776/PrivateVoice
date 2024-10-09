@@ -6,47 +6,64 @@
 # Separated the code into sections on seperate files
 
 import pyaudio
-from crypto_utils import encrypt_audio
+import numpy as np
+from crypto import ChaCha20Cipher
+import logging
 
-CHUNK = 1024
-FORMAT = pyaudio.paInt16
-RATE = 44100
+class AudioSender:
+    def __init__(self, key, input_device, output_device):
+        self.cipher = ChaCha20Cipher(key)
+        self.input_device = input_device
+        self.output_device = output_device
+        self.running = False
+        self.chunk = 1024
+        self.format = pyaudio.paInt16
+        self.channels = 1
+        self.rate = 44100
 
-def get_device_info(p, device_id):
-    device_info = p.get_device_info_by_index(device_id)
-    max_input_channels = device_info['maxInputChannels']
-    max_output_channels = device_info['maxOutputChannels']
-    return device_info, max_input_channels, max_output_channels
+    def audio_callback(self, in_data, frame_count, time_info, status):
+        encrypted_data = self.cipher.encrypt(in_data)
+        return (encrypted_data, pyaudio.paContinue)
 
-def sender(key, stop_event, raw_mic_input_id, encrypted_output_id):
-    p = pyaudio.PyAudio()
-    _, input_channels, _ = get_device_info(p, raw_mic_input_id)
-    _, _, output_channels = get_device_info(p, encrypted_output_id)
-    
-    input_stream = p.open(format=FORMAT, 
-                          channels=input_channels,
-                          rate=RATE, 
-                          input=True, 
-                          frames_per_buffer=CHUNK, 
-                          input_device_index=raw_mic_input_id)
-    
-    output_stream = p.open(format=FORMAT, 
-                           channels=output_channels,
-                           rate=RATE, 
-                           output=True, 
-                           frames_per_buffer=CHUNK, 
-                           output_device_index=encrypted_output_id)
+    def start(self):
+        self.running = True
+        p = pyaudio.PyAudio()
 
-    print(f"Sender started. Input channels: {input_channels}, Output channels: {output_channels}")
-    try:
-        while not stop_event.is_set():
-            audio_chunk = input_stream.read(CHUNK)
-            encrypted_chunk = encrypt_audio(audio_chunk, key)
-            output_stream.write(encrypted_chunk)
-    finally:
-        input_stream.stop_stream()
-        input_stream.close()
-        output_stream.stop_stream()
-        output_stream.close()
-        p.terminate()
-    print("Sender stopped.")
+        try:
+            input_stream = p.open(format=self.format,
+                                channels=self.channels,
+                                rate=self.rate,
+                                input=True,
+                                input_device_index=self.input_device,
+                                frames_per_buffer=self.chunk)
+
+            output_stream = p.open(format=self.format,
+                                channels=self.channels,
+                                rate=self.rate,
+                                output=True,
+                                output_device_index=self.output_device,
+                                frames_per_buffer=self.chunk)
+
+            logging.info("Audio streams opened successfully")
+
+            input_stream.start_stream()
+            
+            while self.running:
+                data = input_stream.read(self.chunk)
+                output_stream.write(data)
+
+        except Exception as e:
+            logging.error(f"Error in AudioSender: {str(e)}")
+            raise
+
+        finally:
+            if 'input_stream' in locals():
+                input_stream.stop_stream()
+                input_stream.close()
+            if 'output_stream' in locals():
+                output_stream.stop_stream()
+                output_stream.close()
+            p.terminate()
+
+    def stop(self):
+        self.running = False
