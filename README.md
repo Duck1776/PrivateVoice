@@ -15,9 +15,9 @@ pip install pyaudio pycryptodome
 # ROADMAP
 Not in any particular order...
 - [ ] Currently designed to use a Virtual Cable like VB-Cable but ideally would be better if it was its own input and output virtual cable.
-- [ ] Save settings on close / set settings on open
-- [ ] Include a "Show Key" button or eye ball to hide the key
-- [ ] Have a "Copy" button to copy the key even if it is hidden
+- [X] Save settings on close / set settings on open
+- [X] Include a "Show Key" button or eye ball to hide the key
+- [X] Have a "Copy" button to copy the key even if it is hidden
 - [ ] Built in tool that can make sharing the key more secure. Right now, I assume you get a key, copy/paste it to the other user, paste into local application. But if there was a way to make a way to encrypt/decrypt the key using the program... (maybe not worth/necessary doing)
 - [ ] Show stats on the bottom of the app that show TX/RX rate, packets per second - something that shows how well it is performing
 - [ ] Somehow be able to adapt to the client, or perhaps a tab that has these settings. Presets for common voice chat applications, or a custom checkbox to fill in the settings if known
