@@ -3,67 +3,47 @@
 # sender.py
 
 # UPDATES
-# Separated the code into sections on seperate files
+# Auto Audio Channels
 
-import pyaudio
+import soundcard as sc
 import numpy as np
 from crypto import ChaCha20Cipher
+import time
 import logging
+import collections
+
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 class AudioSender:
-    def __init__(self, key, input_device, output_device):
+    def __init__(self, key):
         self.cipher = ChaCha20Cipher(key)
-        self.input_device = input_device
-        self.output_device = output_device
+        self.real_mic = sc.default_microphone()
+        self.vb_cable_output = sc.get_speaker('CABLE Input')  # VB-Cable Output
         self.running = False
         self.chunk = 1024
-        self.format = pyaudio.paInt16
         self.channels = 1
         self.rate = 44100
-
-    def audio_callback(self, in_data, frame_count, time_info, status):
-        encrypted_data = self.cipher.encrypt(in_data)
-        return (encrypted_data, pyaudio.paContinue)
+        self.buffer = collections.deque(maxlen=5)
 
     def start(self):
         self.running = True
-        p = pyaudio.PyAudio()
-
-        try:
-            input_stream = p.open(format=self.format,
-                                channels=self.channels,
-                                rate=self.rate,
-                                input=True,
-                                input_device_index=self.input_device,
-                                frames_per_buffer=self.chunk)
-
-            output_stream = p.open(format=self.format,
-                                channels=self.channels,
-                                rate=self.rate,
-                                output=True,
-                                output_device_index=self.output_device,
-                                frames_per_buffer=self.chunk)
-
-            logging.info("Audio streams opened successfully")
-
-            input_stream.start_stream()
-            
+        with self.real_mic.recorder(samplerate=self.rate, channels=self.channels) as mic, \
+            self.vb_cable_output.player(samplerate=self.rate, channels=self.channels) as output:
             while self.running:
-                data = input_stream.read(self.chunk)
-                output_stream.write(data)
-
-        except Exception as e:
-            logging.error(f"Error in AudioSender: {str(e)}")
-            raise
-
-        finally:
-            if 'input_stream' in locals():
-                input_stream.stop_stream()
-                input_stream.close()
-            if 'output_stream' in locals():
-                output_stream.stop_stream()
-                output_stream.close()
-            p.terminate()
+                try:
+                    data = mic.record(numframes=self.chunk)
+                    if data is None or len(data) == 0:
+                        logger.warning("Empty audio frame received, skipping")
+                        continue
+                    self.buffer.append(data)
+                    if len(self.buffer) == 5:
+                        averaged_data = np.mean(self.buffer, axis=0)
+                        encrypted_data = self.cipher.encrypt(averaged_data.tobytes())
+                        output.play(np.frombuffer(encrypted_data, dtype=np.float32).reshape(-1, self.channels))
+                except Exception as e:
+                    logger.error(f"Error during audio processing: {e}")
+                    time.sleep(0.1)
 
     def stop(self):
         self.running = False

@@ -3,16 +3,15 @@
 # main.py
 
 # UPDATES
-# Separated the code into sections on seperate files
+# Auto Audio Channels
 
-import json
-import os
 import sys
-import pyaudio
-import threading
+import os
+import json
 import logging
-from PyQt5.QtWidgets import QApplication, QMainWindow, QTabWidget, QPushButton, QLineEdit, QComboBox, QVBoxLayout, QWidget, QLabel
+from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QLineEdit, QVBoxLayout, QWidget, QLabel, QHBoxLayout
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QFont
 from crypto import generate_key
 from sender import AudioSender
 from receiver import AudioReceiver
@@ -43,104 +42,54 @@ class AudioThread(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Audio Encryption")
-        self.setGeometry(100, 100, 400, 500)
+        self.setWindowTitle("PrivateVoice")
+        self.setGeometry(100, 100, 400, 100)
 
-        self.tab_widget = QTabWidget()
-        self.setCentralWidget(self.tab_widget)
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        layout = QVBoxLayout(central_widget)
 
-        self.init_main_tab()
-        self.init_settings_tab()
+         # Create a horizontal layout for the key label and input
+        key_layout = QHBoxLayout()
+        key_label = QLabel("Key:")
+        key_layout.addWidget(key_label)
+        
+        self.key_field = QLineEdit()
+        self.key_field.setEchoMode(QLineEdit.Password)
+        key_layout.addWidget(self.key_field)
+        
+        # Add the horizontal key layout to the main vertical layout
+        layout.addLayout(key_layout)
+
+        button_layout = QHBoxLayout()
+        
+        self.show_key_button = QPushButton("Show Key")
+        self.show_key_button.setCheckable(True)
+        self.show_key_button.toggled.connect(self.toggle_key_visibility)
+        button_layout.addWidget(self.show_key_button)
+
+        self.new_key_button = QPushButton("New Key")
+        self.new_key_button.clicked.connect(self.generate_new_key)
+        button_layout.addWidget(self.new_key_button)
+
+        self.copy_key_button = QPushButton("Copy Key")
+        self.copy_key_button.clicked.connect(self.copy_key)
+        button_layout.addWidget(self.copy_key_button)
+
+        layout.addLayout(button_layout)
+
+        self.start_stop_button = QPushButton("Start")
+        self.start_stop_button.clicked.connect(self.toggle_encryption)
+        self.start_stop_button.setFixedHeight(40)
+        font = self.start_stop_button.font()
+        font.setPointSize(font.pointSize() + 2)
+        self.start_stop_button.setFont(font)
+        layout.addWidget(self.start_stop_button)
 
         self.load_settings()
 
         self.sender_thread = None
         self.receiver_thread = None
-
-    def init_main_tab(self):
-        main_tab = QWidget()
-        layout = QVBoxLayout()
-        self.start_stop_button = QPushButton("Start")
-        self.start_stop_button.clicked.connect(self.toggle_encryption)
-        layout.addWidget(self.start_stop_button)
-        main_tab.setLayout(layout)
-        self.tab_widget.addTab(main_tab, "Main")
-
-    def init_settings_tab(self):
-        settings_tab = QWidget()
-        layout = QVBoxLayout()
-
-        self.key_field = QLineEdit()
-        self.key_field.setEchoMode(QLineEdit.Password)
-        layout.addWidget(QLabel("Encryption Key:"))
-        layout.addWidget(self.key_field)
-
-        self.show_key_button = QPushButton("Show Key")
-        self.show_key_button.setCheckable(True)
-        self.show_key_button.toggled.connect(self.toggle_key_visibility)
-        layout.addWidget(self.show_key_button)
-
-        self.new_key_button = QPushButton("New Key")
-        self.new_key_button.clicked.connect(self.generate_new_key)
-        layout.addWidget(self.new_key_button)
-
-        self.copy_key_button = QPushButton("Copy Key")
-        self.copy_key_button.clicked.connect(self.copy_key)
-        layout.addWidget(self.copy_key_button)
-
-        input_devices, output_devices = self.get_audio_devices()
-
-        self.mic_input = QComboBox()
-        self.mic_input.addItems(input_devices)
-        layout.addWidget(QLabel("Microphone Input:"))
-        layout.addWidget(self.mic_input)
-
-        self.encrypted_output = QComboBox()
-        self.encrypted_output.addItems(output_devices)
-        layout.addWidget(QLabel("Encrypted Output:"))
-        layout.addWidget(self.encrypted_output)
-
-        self.encrypted_input = QComboBox()
-        self.encrypted_input.addItems(input_devices)
-        layout.addWidget(QLabel("Encrypted Input:"))
-        layout.addWidget(self.encrypted_input)
-
-        self.decrypted_output = QComboBox()
-        self.decrypted_output.addItems(output_devices)
-        layout.addWidget(QLabel("Decrypted Output:"))
-        layout.addWidget(self.decrypted_output)
-
-        self.save_settings_button = QPushButton("Save Settings")
-        self.save_settings_button.clicked.connect(self.save_settings)
-        layout.addWidget(self.save_settings_button)
-
-        settings_tab.setLayout(layout)
-        self.tab_widget.addTab(settings_tab, "Settings")
-
-    def get_audio_devices(self):
-        p = pyaudio.PyAudio()
-        input_devices = []
-        output_devices = []
-        
-        for i in range(p.get_device_count()):
-            device_info = p.get_device_info_by_index(i)
-            device_name = device_info['name']
-            if device_info['maxInputChannels'] > 0:
-                input_devices.append(device_name)
-            if device_info['maxOutputChannels'] > 0:
-                output_devices.append(device_name)
-        
-        p.terminate()
-        return input_devices, output_devices
-
-    def get_device_index(self, device_name, is_input):
-        p = pyaudio.PyAudio()
-        for i in range(p.get_device_count()):
-            dev = p.get_device_info_by_index(i)
-            if dev['name'] == device_name:
-                if (is_input and dev['maxInputChannels'] > 0) or (not is_input and dev['maxOutputChannels'] > 0):
-                    return i
-        return -1
 
     def load_settings(self):
         if not os.path.exists("settings.json"):
@@ -149,23 +98,10 @@ class MainWindow(QMainWindow):
             with open("settings.json", "r") as f:
                 settings = json.load(f)
                 self.key_field.setText(settings["key"])
-                
-                if "mic_input" in settings and settings["mic_input"] in [self.mic_input.itemText(i) for i in range(self.mic_input.count())]:
-                    self.mic_input.setCurrentText(settings["mic_input"])
-                if "encrypted_output" in settings and settings["encrypted_output"] in [self.encrypted_output.itemText(i) for i in range(self.encrypted_output.count())]:
-                    self.encrypted_output.setCurrentText(settings["encrypted_output"])
-                if "encrypted_input" in settings and settings["encrypted_input"] in [self.encrypted_input.itemText(i) for i in range(self.encrypted_input.count())]:
-                    self.encrypted_input.setCurrentText(settings["encrypted_input"])
-                if "decrypted_output" in settings and settings["decrypted_output"] in [self.decrypted_output.itemText(i) for i in range(self.decrypted_output.count())]:
-                    self.decrypted_output.setCurrentText(settings["decrypted_output"])
 
     def save_settings(self):
         settings = {
-            "key": self.key_field.text(),
-            "mic_input": self.mic_input.currentText(),
-            "encrypted_output": self.encrypted_output.currentText(),
-            "encrypted_input": self.encrypted_input.currentText(),
-            "decrypted_output": self.decrypted_output.currentText()
+            "key": self.key_field.text()
         }
         with open("settings.json", "w") as f:
             json.dump(settings, f)
@@ -190,18 +126,8 @@ class MainWindow(QMainWindow):
 
     def start_encryption(self):
         key = self.key_field.text()
-        
-        input_index = self.get_device_index(self.mic_input.currentText(), True)
-        output_index = self.get_device_index(self.encrypted_output.currentText(), False)
-        encrypted_input_index = self.get_device_index(self.encrypted_input.currentText(), True)
-        decrypted_output_index = self.get_device_index(self.decrypted_output.currentText(), False)
-        
-        if -1 in [input_index, output_index, encrypted_input_index, decrypted_output_index]:
-            logging.error("Error: Invalid device selection")
-            return
-
-        self.sender_thread = AudioThread(AudioSender, key, input_index, output_index)
-        self.receiver_thread = AudioThread(AudioReceiver, key, encrypted_input_index, decrypted_output_index)
+        self.sender_thread = AudioThread(AudioSender, key)
+        self.receiver_thread = AudioThread(AudioReceiver, key)
         
         self.sender_thread.error_signal.connect(self.handle_audio_error)
         self.receiver_thread.error_signal.connect(self.handle_audio_error)
@@ -227,12 +153,12 @@ class MainWindow(QMainWindow):
         self.stop_encryption()
 
     def disable_settings(self):
-        for widget in self.tab_widget.widget(1).findChildren((QLineEdit, QComboBox, QPushButton)):
-            if widget != self.copy_key_button:
+        for widget in self.findChildren((QLineEdit, QPushButton)):
+            if widget != self.start_stop_button and widget != self.copy_key_button and widget != self.show_key_button:
                 widget.setEnabled(False)
 
     def enable_settings(self):
-        for widget in self.tab_widget.widget(1).findChildren((QLineEdit, QComboBox, QPushButton)):
+        for widget in self.findChildren((QLineEdit, QPushButton)):
             widget.setEnabled(True)
 
 if __name__ == "__main__":

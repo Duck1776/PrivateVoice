@@ -3,11 +3,11 @@
 # crypto.py
 
 # UPDATES
-# Separated the code into sections on seperate files
+# Auto Audio Channels
 
+import os
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
-import os
 
 def generate_key():
     return os.urandom(32).hex()
@@ -15,10 +15,19 @@ def generate_key():
 class ChaCha20Cipher:
     def __init__(self, key):
         self.key = bytes.fromhex(key)
+        self.nonce_size = 16  # in bytes
 
     def encrypt(self, data):
-        nonce = os.urandom(16)
-        algorithm = algorithms.ChaCha20(self.key, nonce)
-        cipher = Cipher(algorithm, mode=None, backend=default_backend())
+        nonce = os.urandom(self.nonce_size)
+        cipher = Cipher(algorithms.ChaCha20(self.key, nonce), mode=None, backend=default_backend())
         encryptor = cipher.encryptor()
-        return nonce + encryptor
+        encrypted_data = nonce + encryptor.update(data)
+        return encrypted_data
+
+    def decrypt(self, data):
+        nonce = data[:self.nonce_size]
+        ciphertext = data[self.nonce_size:]
+        cipher = Cipher(algorithms.ChaCha20(self.key, nonce), mode=None, backend=default_backend())
+        decryptor = cipher.decryptor()
+        decrypted_data = decryptor.update(ciphertext)
+        return decrypted_data
